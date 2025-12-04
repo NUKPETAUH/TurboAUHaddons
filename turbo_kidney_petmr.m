@@ -1,5 +1,56 @@
 function turbo_kidney_petmr(subject)
-% Kidney segmentation for PET/MR
+% TURBO_KIDNEY_PETMR  Complete PET/MR kidney workflow (IDIF + VOI + voxelwise modelling)
+%
+% DESCRIPTION
+%   This function performs a full kidney PET/MR processing pipeline for a
+%   given subject folder. Utilizes TURBO. The workflow includes:
+%
+%     1. Directory setup and DICOM → NIfTI conversion (PET & MR)
+%     2. MR–PET resampling
+%     3. Whole-body segmentation using TotalSegmentator (MR-based)
+%     4. Aorta extraction and refinement → image-derived input function (IDIF)
+%     5. Kidney mask extraction (L/R), registration, cortical shell estimation
+%     6. TAC extraction for IDIF and kidney cortices
+%     7. VOI-based kinetic modelling using the H2O model (K1, k2, Va, delay, R²)
+%     8. Voxelwise parametric imaging using the turbo_vox_modelling framework
+%     9. Saving NIfTI parameter maps and summary tables (.xlsx)
+%
+% INPUT
+%   subject  – string containing the subject ID, which must correspond to
+%              subfolders in your data_path and dicom_path directories.
+%
+% OUTPUT
+%   No direct output variables. The function writes:
+%       - NIfTI files (resampled MR, masks, smoothed PET, parametric images)
+%       - PNG figures (fits, kidney VOIs)
+%       - Excel tables with VOI and voxelwise results
+%       - PMOD-compatible blood input file (.bld)
+%
+% REQUIREMENTS / DEPENDENCIES
+%   - MATLAB Image Processing Toolbox
+%   - SPM12 (for NIfTI I/O)
+%   - TotalSegmentator (installed and available in system PATH)
+%   - Custom functions (must be available in MATLAB path):
+%         nifti_conversion
+%         refineAortaMask
+%         findBoundingBox
+%         greatestConnectedComponentOnly
+%         fitdelay
+%         fit_h2o
+%         turbo_vox_modelling
+%
+% NOTES
+%   - Expects global variables or workspace vars: data_path, dicom_path.
+%   - Assumes PET data is decay-corrected.
+%   - H2O model options defined via set_modelling_options() and set_turbo_options().
+%   - Segmentation labels correspond to TotalSegmentator MR task output.
+%
+% AUTHOR
+%   Lars Tolbod / AUH
+%   Dec 2025
+%
+% -------------------------------------------------------------------------
+
 
 
 subject_dir = sprintf('%s/%s',data_path,subject);
