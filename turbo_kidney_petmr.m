@@ -15,6 +15,9 @@ function turbo_kidney_petmr(subject)
 %     8. Voxelwise parametric imaging using the turbo_vox_modelling framework
 %     9. Saving NIfTI parameter maps and summary tables (.xlsx)
 %
+%   Eventhough TotalSegmentator is trained on T1w images, it works well on 
+%   InPhase 3D LAVA Flex images (GE Signa PET/MR).  
+%
 % INPUT
 %   subject  – string containing the subject ID, which must correspond to
 %              subfolders in your data_path and dicom_path directories.
