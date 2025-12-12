@@ -55,7 +55,10 @@ function turbo_kidney_petmr(subject)
 % -------------------------------------------------------------------------
 
 
+showDebug=0;
 
+dicom_path = getenv('TOTAL_BODY_DICOM_DIR');  
+data_path = getenv('TOTAL_BODY_PET_DATA_DIR'); 
 subject_dir = sprintf('%s/%s',data_path,subject);
 anat_dir = sprintf('%s/anat',subject_dir);
 pet_dir = sprintf('%s/pet', subject_dir);
@@ -165,6 +168,21 @@ aortaMaskV=petVsum;
 aortaMaskV.Voxels=int8(aortaMask);
 maskFile=[subject_dir filesep 'input' filesep subject '_bloodmask.nii'];
 write(aortaMaskV,maskFile)
+
+figure
+vol=imgaussfilt3(petVsum.Voxels,1);
+m=rot90(squeeze(max(aortaMaskV.Voxels,[],2)));
+I=double(rot90(squeeze(max(vol,[],2))));
+Ishow = mat2gray(I, [0 prctile(I,99,"all")]); 
+% Choose colors for labels 1 and 2
+cmap = [1 0 0;   % label 1 = red
+        0 1 0];  % label 2 = green
+J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
+imshow(J);
+title('MiP')
+idifImgFile  = [subject_dir filesep 'input' filesep subject '_idif.png'];
+saveas(gcf,idifImgFile)
+
 %% ==== IDIF extraction (aorta) ====
 numFrames=size(petV.Voxels,4);
 disp('Extracting IDIFs...');
@@ -231,13 +249,15 @@ for ki = 1:numKidneys
 
     innerKidney  = imerode(M, seCortex);
     cortexShell  = M & ~innerKidney & mask_reg;
+    cortexShell = imdilate(cortexShell,strel('sphere', 1));
 
     % ---- PET-based thresholding for cortex ----
     maskedPET = petMeanCrop .* cortexShell;
-    threshold = prctile(petMeanCrop(:), 75);        % high-uptake shell
+    %threshold = prctile(petMeanCrop(:), 75); 
+    threshold = prctile(petMeanCrop(cortexShell), 50);        % high-uptake shell
     thresMask = maskedPET > threshold;
-
-    finalMask = imerode(thresMask, strel('sphere', 1));
+    %finalMask=thresMask;
+    finalMask = imerode(thresMask, strel('cube', 1));
 
     % Store 4D PET crop from ORIGINAL PET volume (not smoothed)
     kidneyPET{ki}   = petV.Voxels(y1:y2, x1:x2, z1:z2, :);
@@ -350,7 +370,12 @@ for id = 1:nIF
         end
     end
 end
-
+drawnow
+outdir = fullfile(subject_dir,'results','results_no_mc');
+if ~isdir(outdir)
+    mkdir(outdir)
+end
+saveas(gcf, fullfile(outdir, [subject '_kidney_ROIfit.png']));
 %% === Voxelwise modeling ===
 disp('Performing voxelwise modeling...')
 vox_petfile = pet_orig_smooth_nii;
@@ -459,7 +484,8 @@ for i = 1:length(vox_par_est_names)
         J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
         imshow(J);
         title('Axial')
-        outdir = fullfile(subject_dir,'results','results_no_mc');
+        
+        drawnow
         saveas(gcf, fullfile(outdir, [subject '_kidney_VOIs.png']));
     end
 end
@@ -469,7 +495,7 @@ end
 outdir = fullfile(subject_dir,'results','results_no_mc','voi-modelling','h2o');
 if ~exist(outdir, 'dir'); mkdir(outdir); end
 
-saveas(gcf, fullfile(outdir, [subject '_kidney_ROIfit.png']));
+
 outdir = fullfile(subject_dir,'results','results_no_mc');
 % You can rename columns later; for speed / robustness we keep generic names
 Th = array2table([resultsH param(:,1)']);
@@ -501,9 +527,22 @@ M = (petSum .* M) > th;
 
 M = imclose(M, se);
 M = imfill(M, 'holes');
-M = imerode(M, se);
+
 M = logical(M);
 
+skel2D = false(size(M));
+for z = 1:size(M,3)
+    slice = M(:,:,z);
+    if any(slice(:))
+        % bwmorph 'thin' until no further thinning: result is 1-pixel wide skeleton
+        sk = bwmorph(slice, 'thin', Inf);
+        % optionally remove spur pixels: use 'spur' with iterations (tune)
+        sk = bwmorph(sk, 'spur', 5);
+        skel2D(:,:,z) = sk;
+    end
+end
+
+M=skel2D;
 end
 
 function [x1,y1,z1, x2,y2,z2] = findBoundingBox(img)
