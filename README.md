@@ -5,6 +5,7 @@ The repository currently includes:
 
 - **`turbo_kidney.m`** — Kidney kinetic modeling
 - **`turbo_lung.m`** — Lung kinetic modeling
-- **`turbo_kidney_petmr.m`** — Kidney kinetic modeling using pet/mr instead of Quadra 
+- **`turbo_kidney_petmr.m`** — Kidney kinetic modeling using pet/mr instead of Quadra
+- **`run_rhIDIF.m`** — Script for using RH IDIF for extracting input function (https://github.com/Rigshospitalet-KFNM/IDIF)
 
 All scripts follow the same directory structure as the official **TURBO** (Turku Image-Based Input Function Optimization) framework (https://turbo.utu.fi/)
