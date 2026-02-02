@@ -1,4 +1,4 @@
-function turbo_lung(folder, subject,inpfunc)
+function turbo_lung(folder, subject,inpfunc,vox)
 % TURBO_LUNG  Perform lung kinetic modeling from PET/CT data for
 %             integration in Turku's TURBO pipeline
 %             [15O]H2O with PA or RV input.
@@ -13,7 +13,7 @@ function turbo_lung(folder, subject,inpfunc)
 %     - Generating PMOD-compatible TAC files
 %     - ROI-level kinetic modeling (fit_h2o)
 %     - Voxelwise modeling (turbo_vox_modelling)
-%     - Writing parametric images and summary results
+%     - Writing parametric images and summary resultswait<
 %
 %   INPUTS:
 %       folder  : base directory for subject data
@@ -27,24 +27,24 @@ function turbo_lung(folder, subject,inpfunc)
 %   Date:   Nov 2025
 % -------------------------------------------------------------------------
 
-
+close all
 %% === Unzip NIfTI files ===
 disp('Unzipping NIfTI files...')
-A = dir(fullfile([folder '\nifti\' subject], '**', '*.nii.gz'));
+A = dir(fullfile([folder '/nifti/' subject], '**', '*.nii.gz'));
 for i = 1:length(A)
     gunzip(fullfile(A(i).folder, A(i).name));
 end
 
 %% === Load anatomical and PET data ===
 disp('Loading data...')
-segHeartV = medicalVolume([folder '\nifti\' subject '\anat\' subject '_ct_segmentations_heart_coregistered.nii']);
-segV      = medicalVolume([folder '\nifti\' subject '\anat\' subject '_ct_segmentations_coregistered.nii']);
-petV      = medicalVolume([folder '\nifti\' subject '\pet\' subject '_pet.nii']);
+segHeartV = medicalVolume([folder '/nifti/' subject '/anat/' subject '_ct_segmentations_heart_coregistered.nii.gz']);
+segV      = medicalVolume([folder '/nifti/' subject '/anat/' subject '_ct_segmentations_coregistered.nii.gz']);
+petV      = medicalVolume([folder '/nifti/' subject '/pet/' subject '_pet.nii.gz']);
 
 % Load options
-turbo_options = load([folder '\nifti\' subject '\options\' subject '_turbo_options.mat']);
-model_options = load([folder '\nifti\' subject '\options\' subject '_modelling_options.mat']);
-study_options = load([folder '\nifti\' subject '\options\' subject '_study_specs.mat']);
+turbo_options = load([folder '/nifti/' subject '/options/' subject '_turbo_options.mat']);
+model_options = load([folder '/nifti/' subject '/options/' subject '_modelling_options.mat']);
+study_options = load([folder '/nifti/' subject '/options/' subject '_study_specs.mat']);
 
 % Identify lung ROI labels
 lung_label = find(contains(turbo_options.roinames, 'lung'));
@@ -76,9 +76,9 @@ maskTotal = false(size(segV.Voxels));
 maskLungIdx_ = [];
 for i = 1:length(lung_label)
     maskLung{i} = segV.Voxels == lung_label(i);
-    maskLung{i} = logical(imerode(maskLung{i}, se));
-    maskLungIdx{i} = find(maskLung{i});
     maskTotal = maskTotal | maskLung{i};
+    maskLung{i} = logical(imerode(maskLung{i}, se));
+    maskLungIdx{i} = find(maskLung{i});    
     maskLungIdx_ = [maskLungIdx_; maskLungIdx{i}];
 end
 
@@ -86,6 +86,7 @@ end
 se = strel('sphere', 3);
 maskTotal = imclose(maskTotal, se);
 maskTotal = imfill(maskTotal, 'holes');
+maskTotalidx=find(maskTotal);
 
 %% === Compute regional TACs ===
 disp('Extracting TACs...')
@@ -102,7 +103,11 @@ for i = 1:nFrames
 end
 
 %% === Plot TACs ===
-T = readtable([folder '\nifti\' subject '\input\' subject '_IDIFaorta_mc_rigid.txt']);
+try 
+    T = readtable([folder '/nifti/' subject '/input/' subject '_IDIFaorta_mc_rigid.txt']);
+catch
+    T = readtable([folder '/nifti/' subject '/input/' subject '_IDIFaorta_no_mc.txt']);
+end
 figure;
 plot(T.Var1, tacPA, 'r',T.Var1, tacRV, 'g', T.Var1, tacTotalLung, 'b');
 hold on
@@ -123,7 +128,10 @@ elseif inpfunc==1
     nameIF='IDIFRV';
     disp('Using RV input')
 end
-saveas(gcf, [folder '\nifti\' subject '\results\results_no_mc\vox-modelling\imgh2obf\' subject '_' nameIF '_lung_tacs.png'])
+if ~isfolder([folder '/nifti/' subject '/results/results_no_mc/roi-modelling/fit_h2o'])
+    mkdir([folder '/nifti/' subject '/results/results_no_mc/roi-modelling/fit_h2o'])
+end
+saveas(gcf, [folder '/nifti/' subject '/results/results_no_mc/roi-modelling/fit_h2o/' subject '_' nameIF '_lung_tacs.png'])
 %% === Generate PMOD-compatible TAC files ===
 disp('Saving PMOD TAC files...')
 time_min   = T.Var1;
@@ -136,18 +144,18 @@ tissue2    = tacLung(:,1) / 1000;
 
 % Whole Blood file
 blood_data = table(time_min, wb_kBq', 'VariableNames', {'time[min]', 'plasma[kBq/cc]'});
-blood_filename = [folder '\nifti\' subject '\input\' subject '_pmod_WholeBlood_TAC.txt'];
-fid = fopen(blood_filename, 'w'); fprintf(fid, '#PMOD_BLD\n'); fclose(fid);
-writetable(blood_data, blood_filename, 'Delimiter', '\t');
-fprintf('✅ Saved: %s\n', blood_filename);
+blood_filename = [folder '/nifti/' subject '/input/' subject '_pmod_RV_WholeBlood_TAC.txt'];
+fid = fopen(blood_filename, 'w'); fprintf(fid, '#PMOD_BLD/n'); fclose(fid);
+writetable(blood_data, blood_filename, 'Delimiter', 'tab');
+fprintf('✅ Saved: %s/n', blood_filename);
 
 % Tissue TAC file
 tissue_data = table(time_start, time_end, tissue1', tissue2, ...
     'VariableNames', {'start[min]', 'end[min]', 'Tissue1[kBq/cc]', 'Tissue2[kBq/cc]'});
-tissue_filename = [folder '\nifti\' subject '\input\' subject '_pmod_Tissue_TAC.txt'];
-fid = fopen(tissue_filename, 'w'); fprintf(fid, '#PMOD_TAC\n'); fclose(fid);
-writetable(tissue_data, tissue_filename, 'Delimiter', '\t');
-fprintf('✅ Saved: %s\n', tissue_filename);
+tissue_filename = [folder '/nifti/' subject '/input/' subject '_pmod_Lung_Tissue_TAC.txt'];
+fid = fopen(tissue_filename, 'w'); fprintf(fid, '#PMOD_TAC/n'); fclose(fid);
+writetable(tissue_data, tissue_filename, 'Delimiter', 'tab');
+fprintf('✅ Saved: %s/n', tissue_filename);
 
 %% === ROI-level modeling ===
 disp('Performing ROI-level modeling...')
@@ -206,24 +214,29 @@ for i = 1:size(tac,2)
     r = corrcoef(tac(:,i), modelfit);
     R_2(i) = r(1,2)^2;
 end
-if ~isfolder([folder '\nifti\' subject '\results\results_no_mc\vox-modelling\imgh2obf'])
-    mkdir([folder '\nifti\' subject '\results\results_no_mc\vox-modelling\imgh2obf'])
-end
-saveas(gcf, [folder '\nifti\' subject '\results\results_no_mc\vox-modelling\imgh2obf\' subject '_' nameIF '_lung_ROIfit.png'])
+
+saveas(gcf, [folder '/nifti/' subject '/results/results_no_mc/roi-modelling/fit_h2o/' subject '_' nameIF '_lung_ROIfit.png'])
+
 
 %% === Voxelwise modeling ===
+vox_results_dir = [folder '/nifti/' subject '/results/results_no_mc/vox-modelling/imgh2obf/'];
+if ~isfile([vox_results_dir subject '_k1_imgh2obf_' nameIF '_lung_from_smoothed.nii']) || vox
 disp('Performing voxelwise modeling...')
-vox_petfile = [folder '\nifti\' subject '\pet\' subject '_pet_smoothed.nii'];
+vox_petfile = [folder '/nifti/' subject '/pet/' subject '_pet_smoothed.nii'];
+if ~isfile(vox_petfile)
+    petfile=[folder '/nifti/' subject '/pet/' subject '_pet.nii'];
+    smoothPET(petfile,subject)
+end
 frametimes  = study_options.frames*60;
 inputdata   = double([mean(study_options.frames,2)*60 tacIF']);
-maskMat     = load([folder '\nifti\' subject '\pet\' subject '_pet_mask.mat']);
+maskMat     = load([folder '/nifti/' subject '/pet/' subject '_pet_mask.mat']);
 fit_len_timeunit = 'sec';
 vox_par_est = [];
 
-for i = 1:length(maskLungIdx)
-    [vox_par_est_, vox_par_est_names, vox_par_est_units] = turbo_vox_modelling( ...
-        model_options.VOXmodel, vox_petfile, frametimes, inputdata, ...
-        mask_idx = maskLungIdx{i}, ...
+%for i = 1:length(maskLungIdx)
+    [vox_par_est, vox_par_est_names, vox_par_est_units] = turbo_vox_modelling( ...
+        model_options.VOXmodel, vox_petfile, frametimes, inputdata, inputdata, ...
+        mask_idx = maskTotalidx, ...
         verbose = verbose, ...
         fitdelay_start = fitdelay_result(i)+delay(i), ...
         fitdelay_end = fitdelay_result(i)+delay(i), ...
@@ -238,12 +251,16 @@ for i = 1:length(maskLungIdx)
         weight = study_options.weight, ...
         dose = study_options.dose, ...
         LC = model_options.vox_LC);
-    vox_par_est = [vox_par_est; vox_par_est_];
-end
+    %vox_par_est = [vox_par_est; vox_par_est_];
+%end
 
 %% === Write parametric images ===
 disp('Writing parametric images...')
-vox_results_dir = [folder '\nifti\' subject '\results\results_no_mc\vox-modelling\imgh2obf\'];
+% Gaussian smoothing for MIP visualization
+voxelSpacing = petV.VoxelSpacing;
+sigma_mm = 5;
+sigma_voxels = sigma_mm ./ voxelSpacing;
+if ~isfolder(vox_results_dir); mkdir(vox_results_dir); end
 pethdr = spm_vol(vox_petfile); pethdr = pethdr(1);
 vox_img_names = cell(length(vox_par_est_names), 1);
 
@@ -263,33 +280,35 @@ for i = 1:length(vox_par_est_names)
     pethdr.descrip = [subject ' ' char(vox_par_est_names(i)) '-parametric image'];
     vox_img_names{i} = pethdr.fname;
     temp_param_img = zeros(pethdr.dim);
-    temp_param_img(maskLungIdx_) = vox_par_est(:,i);
+    temp_param_img(maskTotalidx) = vox_par_est(:,i);
+    temp_param_img=imgaussfilt3(temp_param_img, sigma_voxels);
     spm_write_vol(pethdr, temp_param_img);
 end
-
+end
 %% === Visualization & summary ===
 disp('Creating MIP visualizations...')
 Vva    = medicalVolume([vox_results_dir subject '_va_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
-VK1    = medicalVolume([vox_results_dir subject '_K1_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
+VK1    = medicalVolume([vox_results_dir subject '_k1_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
 Vk2    = medicalVolume([vox_results_dir subject '_k2_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
 Vdelay = medicalVolume([vox_results_dir subject '_delay_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
 Vflow  = medicalVolume([vox_results_dir subject '_flow_imgh2obf_' nameIF '_lung_from_smoothed.nii']);
 
-% Gaussian smoothing for MIP visualization
-voxelSpacing = VK1.VoxelSpacing;
-sigma_mm = 5;
-sigma_voxels = sigma_mm ./ voxelSpacing;
-
-filteredVk1    = imgaussfilt3(VK1.Voxels, sigma_voxels);
-filteredVk2    = imgaussfilt3(Vk2.Voxels, sigma_voxels);
-filteredVva    = imgaussfilt3(Vva.Voxels, sigma_voxels);
-filteredVdelay = imgaussfilt3(Vdelay.Voxels, sigma_voxels);
-filteredVflow  = imgaussfilt3(Vflow.Voxels, sigma_voxels);
-
+% % Gaussian smoothing for MIP visualization
+% voxelSpacing = VK1.VoxelSpacing;
+% sigma_mm = 5;
+% sigma_voxels = sigma_mm ./ voxelSpacing;
+% 
+% filteredVk1    = imgaussfilt3(VK1.Voxels, sigma_voxels);
+% filteredVk2    = imgaussfilt3(Vk2.Voxels, sigma_voxels);
+% filteredVva    = imgaussfilt3(Vva.Voxels, sigma_voxels);
+% filteredVdelay = imgaussfilt3(Vdelay.Voxels, sigma_voxels);
+% filteredVflow  = imgaussfilt3(Vflow.Voxels, sigma_voxels);
+VK1vox=VK1.Voxels; Vk2vox=Vk2.Voxels; Vvavox=Vva.Voxels; 
+Vdelayvox=Vdelay.Voxels; Vflowvox=Vflow.Voxels;
 % Display MIPs
 fh = figure; fh.WindowState = 'fullscreen'; tiledlayout(2,2)
 titles = {'K1','k2','Va','Delay'};
-vars   = {filteredVk1, filteredVk2, filteredVva, filteredVdelay};
+vars   = {VK1vox, Vk2vox, Vvavox, Vdelayvox};
 ranges = {[0 6],[0 20],[0 100],[0 5]};
 
 for i = 1:4
@@ -307,18 +326,25 @@ saveas(gcf, [vox_results_dir subject '_' nameIF 'fixed_delay_lung_MiP.png'])
 disp('Saving ROI summary...')
 for i = 1:length(maskLungIdx)
     results(i,:) = [ ...
-        mean(filteredVk1(maskLungIdx{i})), ...
-        mean(filteredVk2(maskLungIdx{i})), ...
-        mean(filteredVva(maskLungIdx{i})), ...
-        mean(filteredVflow(maskLungIdx{i}))];
+        mean(VK1vox(maskLungIdx{i})), ...
+        mean(Vk2vox(maskLungIdx{i})), ...
+        mean(Vvavox(maskLungIdx{i})), ...
+        mean(Vflowvox(maskLungIdx{i}))];
 end
 
+results(1+length(maskLungIdx),:) = [ ...
+        mean(VK1vox(maskTotalidx)), ...
+        mean(Vk2vox(maskTotalidx)), ...
+        mean(Vvavox(maskTotalidx)), ...
+        mean(Vflowvox(maskTotalidx))];
+
+
 delay_tmp  = fitdelay_result + delay;
-resultsROI = [K1(1:end-1)' k2(1:end-1)' Va(1:end-1)' R_2(1:end-1)' delay_tmp(1:end-1)'];
-results    = [results resultsROI];
+resultsROI = [K1(1:end)' k2(1:end)' Va(1:end)' R_2(1:end)' delay_tmp(1:end)'];
+results    = [[roinames; 'Total Lung'] results resultsROI];
 
 T = array2table(results, 'VariableNames', ...
-    {'K1 (param)','k2 (param)','Va (param)','flow (param)', ...
+    {'Segment','K1 (param)','k2 (param)','Va (param)','flow (param)', ...
      'K1 (ROI)','k2 (ROI)','Va (ROI)','R2 (ROI)','delay (ROI)'});
 writetable(T, [vox_results_dir subject '_' nameIF '_results.xlsx']);
 disp('✅ All processing completed.')
@@ -326,7 +352,7 @@ disp('✅ All processing completed.')
 
 %% === Zip NIfTI files ===
 disp('Zipping NIfTI files...')
-A = dir(fullfile([folder '\nifti\' subject], '**', '*.nii'));
+A = dir(fullfile([folder '/nifti/' subject], '**', '*.nii'));
 for i = 1:length(A)
     gzip(fullfile(A(i).folder, A(i).name));
     delete(fullfile(A(i).folder, A(i).name));
@@ -334,4 +360,62 @@ end
 
 
 
+end
+
+
+function smoothPET(petfile, subject)
+        [pet_folder,pet_filename,~]=fileparts(petfile);
+        pet_img = nifti(petfile);
+        modelling_options.filter_size=3; verbose=5;
+        pethdr = spm_vol(petfile);
+        framenr = length(pethdr);
+        pethdr = pethdr(1);
+    
+        pixdim  = abs([pethdr.mat(1,1)  pethdr.mat(2,2)  pethdr.mat(3,3)]);
+        % dimfilt = round(11 ./ pixdim);
+        fwhm    = modelling_options.filter_size ./ pixdim;
+    
+        % fwhm    = 3 ./ pixdim;
+%         fwhm    = 5 ./ pixdim;
+        sd      = fwhm/sqrt(8*log(2));
+    
+        temp_frame_paths = cell(framenr, 1);
+    
+        % Print progress
+        if verbose > 0
+            prog = 0.1;
+            prog_print = sprintf("Smoothing dynamic image...");
+            prog_print = pad(prog_print, 50, 'right');
+    
+            fprintf(prog_print); 
+        end
+        smooth_folder = [pet_folder filesep 'temp_smooth' filesep];
+        if exist(smooth_folder, 'dir')
+            delete([smooth_folder '*'])
+        else
+            mkdir(smooth_folder)
+        end
+        % Smooth frame by frame.
+        
+        for f = 1:framenr
+
+            % smoothed_frame_data = PSVsmooth_3d(pet_img.dat(:,:,:,f), sd, dimfilt);
+            smoothed_frame_data = imgaussfilt3(pet_img.dat(:,:,:,f), sd);
+
+            % Save temporary smoothed frame.
+            pethdr = spm_vol(petfile);
+            pethdr = pethdr(1);
+            temp_frame_file = [smooth_folder subject '_temp_smoothed_frame' int2str(f) '.nii'];
+            pethdr.fname = temp_frame_file;
+            temp_frame_paths{f} = temp_frame_file;
+            spm_write_vol(pethdr, smoothed_frame_data);
+
+        end
+        % Clear memory
+
+    
+        petfile_smoothed = [pet_folder filesep pet_filename '_smoothed.nii'];
+    
+        spm_file_merge(temp_frame_paths, petfile_smoothed);
+        delete([smooth_folder '*'])
 end

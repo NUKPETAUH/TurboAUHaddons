@@ -90,7 +90,30 @@ end
 disp('Loading data...');
 segV       = medicalVolume(fullfile(baseNifti, 'anat', [subject '_ct_segmentations_coregistered.nii']));
 petV       = medicalVolume(fullfile(baseNifti, 'pet',  [subject '_pet.nii']));
-petVsmooth = medicalVolume(fullfile(baseNifti, 'pet',  [subject '_pet_smoothed.nii']));
+
+if isfile(fullfile(baseNifti, 'pet',  [subject '_pet_smoothed.nii']))
+
+    petVsmooth = medicalVolume(fullfile(baseNifti, 'pet',  [subject '_pet_smoothed.nii']));
+else
+    disp('Smoothed 4D not found - applying gaussian filter')
+    petVsmooth=petV;
+    V = petVsmooth.Voxels;                  % voxel data
+    sp = petVsmooth.VoxelSpacing;           % [sx sy sz] in mm
+    target_mm = 3;                    % desired Gaussian sigma in mm
+    
+    % sigma per spatial dimension in voxels
+    sigma_vox = target_mm ./ sp;      % 1x3 vector
+    
+    % allocate filtered volume with same class
+    Vf = zeros(size(V), 'like', V);
+    
+    num_frames = size(V,4);
+    for frame = 1:num_frames
+        Vf(:,:,:,frame) = imgaussfilt3(V(:,:,:,frame), sigma_vox);
+    end
+    petVsmooth.Voxels=Vf;
+    clear V sp target_mm num_frames frame
+end
 
 turbo_options = load(fullfile(baseNifti, 'options', [subject '_turbo_options.mat']));
 model_options = load(fullfile(baseNifti, 'options', [subject '_modelling_options.mat']));
@@ -258,8 +281,15 @@ for f = 1:numFrames
         idif(f,k) = mean(frame(aortaMask{k+1}));
     end
 end
-
-T = readtable(fullfile(baseNifti, 'input', [subject '_IDIFaorta_mc_rigid.txt']));
+inp_file=fullfile(baseNifti, 'input', [subject '_IDIFaorta_no_mc.txt']);
+if ~isfile(inp_file)
+    inp_file=fullfile(baseNifti, 'input', [subject '_IDIFaorta_mc_rigid.txt']);
+    if ~isfile(inp_file)
+        disp('Input file not found')
+        
+    end
+end
+T = readtable(inp_file);
 idif = [T.Var2, idif];  % first column TURBO cardiac IDIF
 idif_label = {'TURBO Cardiac IDIF','IDIF1','IDIF2','IDIF3'};
 
@@ -343,7 +373,7 @@ for id = 1:nIF
 end
 
 %% ==== Save results ====
-outdir = fullfile(baseNifti,'results','results_no_mc','vox-modelling','imgh2obf');
+outdir = fullfile(baseNifti,'results','results_no_mc','roi-modelling','fit_h2o','kidney');
 if ~exist(outdir, 'dir'); mkdir(outdir); end
 
 saveas(gcf, fullfile(outdir, [subject '_kidney_ROIfit.png']));
