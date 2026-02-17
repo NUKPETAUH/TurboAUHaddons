@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os, time, json, re, zipfile, io
 import requests
+import tempfile
+import shutil
 
 # --------- CONFIG ----------
 ORTHANC_URL = "http://127.0.0.1:8042"
@@ -57,18 +59,44 @@ def rest_get_bytes(path: str):
 
 
 def parse_study_description(sd: str):
+
     """
-    Example: "Specials^448_IMPACT_Vaagen (Adult)"
-    ProjectID = 448
-    state = Vaagen
+    Handles inconsistent formats like:
+      Specials^448_IMPACT_Vaagen (Adult)
+      Specials^448_IMPACT_Pressor_1 (Adult)
+      Specials^448_SOMETHING_Long_State_Name (Adult)
+
+    Returns:
+      ProjectID = 448
+      state = Pressor1 / Vaagen / LongStateName
     """
     if not sd:
         return ("UNK", "UNK")
-    m = re.search(r"\^(\d{3})_.*?_([A-Za-z0-9]+)", sd)
-    if not m:
-        return ("UNK", "UNK")
-    return (m.group(1), m.group(2))
 
+    # Extract ProjectID (digits after ^)
+    pid_match = re.search(r"\^(\d+)", sd)
+    project_id = pid_match.group(1) if pid_match else "UNK"
+
+    # Remove the prefix up to first caret and any trailing parentheses
+    # Example: "Specials^448_IMPACT_Pressor_1 (Adult)" → "448_IMPACT_Pressor_1"
+    core = re.sub(r"\s*\(.*\)$", "", sd)  # remove "(Adult)"
+    if "^" in core:
+        core = core.split("^", 1)[1]
+
+    # Split by underscore
+    parts = core.split("_")
+
+    # Expected pattern: [ProjectID, SOMETHING, STATE...]
+    if len(parts) >= 3:
+        state_parts = parts[2:]
+        state_raw = "".join(state_parts)  # join Pressor + 1 → Pressor1
+    else:
+        state_raw = "UNK"
+
+    # Keep alphanumeric only (safe for folders)
+    state = re.sub(r"[^A-Za-z0-9]+", "", state_raw)
+
+    return (project_id, state if state else "UNK")
 
 def safe(s: str):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s or "UNK")
@@ -116,37 +144,60 @@ def mark_series_exported(dest_dir: str, series_id: str):
     os.replace(tmp, final)
 
 
+
 def export_series_to(series_id: str, dest_dir: str):
     """
-    Download /series/{id}/archive zip and flatten files into dest_dir (no nesting).
+    Stream Orthanc /series/{id}/archive to a temp zip file on disk,
+    then extract files into dest_dir (flattened), then delete temp.
     """
     ensure_dir(dest_dir)
-    data = rest_get_bytes(f"/series/{series_id}/archive")
 
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
-        for info in z.infolist():
-            if info.is_dir():
-                continue
+    # Put temp zip on the SAME filesystem as dest_dir to avoid cross-device issues
+    # (or use /var/tmp if you prefer)
+    tmp_dir = dest_dir
+    fd, tmp_zip = tempfile.mkstemp(prefix=f"series_{series_id}_", suffix=".zip", dir=tmp_dir)
+    os.close(fd)
 
-            filename = os.path.basename(info.filename)
-            if not filename:
-                continue
+    try:
+        # Stream download to disk (no .content)
+        with sess.get(ORTHANC_URL + f"/series/{series_id}/archive", stream=True, timeout=300) as r:
+            r.raise_for_status()
+            with open(tmp_zip, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
 
-            out_path = os.path.join(dest_dir, filename)
+        # Extract flattened
+        with zipfile.ZipFile(tmp_zip) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
 
-            # Avoid overwriting if duplicates exist
-            if os.path.exists(out_path):
-                base, ext = os.path.splitext(filename)
-                i = 1
-                while True:
-                    candidate = os.path.join(dest_dir, f"{base}_{i}{ext}")
-                    if not os.path.exists(candidate):
-                        out_path = candidate
-                        break
-                    i += 1
+                filename = os.path.basename(info.filename)
+                if not filename:
+                    continue
 
-            with z.open(info) as src, open(out_path, "wb") as dst:
-                dst.write(src.read())
+                out_path = os.path.join(dest_dir, filename)
+
+                if os.path.exists(out_path):
+                    base, ext = os.path.splitext(filename)
+                    i = 1
+                    while True:
+                        candidate = os.path.join(dest_dir, f"{base}_{i}{ext}")
+                        if not os.path.exists(candidate):
+                            out_path = candidate
+                            break
+                        i += 1
+
+                with z.open(info) as src, open(out_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+
+    finally:
+        try:
+            os.remove(tmp_zip)
+        except FileNotFoundError:
+            pass
+
 
 
 def study_metadata(study_id: str):
