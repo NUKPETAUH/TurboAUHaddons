@@ -11,6 +11,7 @@ ORTHANC_PASS = ""
 
 JOB_DIR = "/var/lib/orthanc/jobs"
 STATE_FILE = os.path.join(JOB_DIR, "study_state.json")
+EXPORT_LOCK = False
 
 # Tuning for large series
 QUIET_SECONDS = 20                  # small study-level quiet
@@ -362,12 +363,41 @@ def main():
         changed = False
 
         for study_id, rec in list(state.items()):
+            # Cache study metadata once per study iteration
+            try:
+                patient_id, study_date, study_desc = study_metadata(study_id)
+                project_id, state_name = parse_study_description(study_desc)
+                state_lower = (state_name or "UNK").lower()
+            except Exception as e:
+                print(f"worker: WARNING could not read study metadata {study_id}: {e}", flush=True)
+                continue    
+
             if now - rec.get("last_seen", 0) < QUIET_SECONDS:
                 continue
 
             # iterate over tracked series for this study
             for series_id, series_rec in list(rec.get("series", {}).items()):
-                dest, sub = compute_dest(study_id, series_id)
+                # Get series modality + description (still needs series_info)
+                modality, series_desc, _ = series_info(series_id)
+
+                if modality in ("PT", "PET"):
+                    sub = "PET"
+                    o2_suffix = "_o2" if contains_o2(series_desc) else ""
+                elif modality == "CT":
+                    sub = "CT"
+                    o2_suffix = ""
+                elif modality in ("MR", "MRI"):
+                    sub = "MRI"
+                    o2_suffix = ""
+                else:
+                    rec["series"].pop(series_id, None)
+                    changed = True
+                    continue
+
+                folder_name = f"{safe(patient_id)}_{safe(study_date)}{o2_suffix}_{safe(state_lower)}"
+                root = os.path.join(BASE_OUT, safe(project_id), "dicom", folder_name)
+                dest = os.path.join(root, sub)
+
                 if dest is None:
                     # unsupported modality; drop it from tracking
                     rec["series"].pop(series_id, None)
@@ -399,6 +429,13 @@ def main():
                 age_seconds = now - series_rec.get("first_seen", now)
 
                 if stable_seconds >= SERIES_QUIET_SECONDS or age_seconds >= SERIES_MAX_WAIT_SECONDS:
+                    global EXPORT_LOCK
+
+                    if EXPORT_LOCK:
+                        # Another export is in progress; wait for next loop
+                        continue
+
+                    EXPORT_LOCK = True
                     print(f"worker: exporting series {series_id} -> {dest} (stable={stable_seconds:.0f}s age={age_seconds:.0f}s count={latest_count})", flush=True)
                     try:
                         export_series_to(series_id, dest)
@@ -408,6 +445,8 @@ def main():
                     except Exception as e:
                         print(f"worker: ERROR exporting series {series_id}: {e}", flush=True)
                         # keep it for retry
+                    finally:
+                        EXPORT_LOCK = False
 
             state[study_id] = rec
 
