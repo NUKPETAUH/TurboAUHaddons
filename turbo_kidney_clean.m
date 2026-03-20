@@ -151,6 +151,8 @@ petDataSmooth = petVsmooth.Voxels; % 4D smoothed
 
 kidneyPET    = cell(1, numKidneys);
 cortexMasks  = cell(1, numKidneys);
+petMeanCrop_  = cell(1, numKidneys);
+maskCrop_ = cell(1, numKidneys);
 zBounds      = zeros(2, numKidneys);
 
 %% ==== Process each kidney ====
@@ -171,14 +173,52 @@ for ki = 1:numKidneys
     petCrop     = petDataSmooth(y1:y2, x1:x2, z1:z2, :);
     petMeanCrop = mean(petCrop, 4);
     maskCrop    = voxelMask(y1:y2, x1:x2, z1:z2);
-
+    maskCrop_{ki}=maskCrop;
     % Registration: kidney mask -> PET
-    maskSmooth = imgaussfilt3(single(maskCrop), 2.0);
-    tform = imregtform(maskSmooth, petMeanCrop, 'affine', optimizer, metric);
+    % Registration: smooth using sigma in mm -> convert to voxels per axis
+    vx=voxelSpacing;
+    sigma_mm = 2*1.65;                        % smoothing sigma in mm
+    if isscalar(vx), sigmaVox = sigma_mm / vx; else sigmaVox = sigma_mm ./ vx; end
+    maskSmooth = imgaussfilt3(single(maskCrop), sigmaVox);
+
+    tform = imregtform(maskSmooth, petMeanCrop, 'rigid', optimizer, metric);
     mask_reg = imwarp( ...
         maskCrop, tform, ...
         'OutputView', imref3d(size(petMeanCrop)), ...
         'InterpolationMethod','nearest');   % keep binary
+    touches = any(mask_reg(1,:,:),'all') || any(mask_reg(end,:,:),'all') || ...
+          any(mask_reg(:,1,:),'all') || any(mask_reg(:,end,:),'all') || ...
+          any(mask_reg(:,:,1),'all') || any(mask_reg(:,:,end),'all');
+    if touches
+        nn=2;
+        y1=y1-nn; y2=y2+nn;
+        x1=x1-nn; x2=x2+nn;
+        z1=z1-nn; z2=z2+nn;
+        petCrop     = petDataSmooth(y1:y2, x1:x2, z1:z2, :);
+        petMeanCrop = mean(petCrop, 4);
+        maskCrop    = voxelMask(y1:y2, x1:x2, z1:z2);
+        maskCrop_{ki}=maskCrop;
+        maskSmooth = imgaussfilt3(single(maskCrop), sigmaVox);
+
+        tform = imregtform(maskSmooth, petMeanCrop, 'rigid', optimizer, metric);
+        mask_reg = imwarp( ...
+            maskCrop, tform, ...
+            'OutputView', imref3d(size(petMeanCrop)), ...
+            'InterpolationMethod','nearest');   % keep binary
+        touches = any(mask_reg(1,:,:),'all') || any(mask_reg(end,:,:),'all') || ...
+          any(mask_reg(:,1,:),'all') || any(mask_reg(:,end,:),'all') || ...
+          any(mask_reg(:,:,1),'all') || any(mask_reg(:,:,end),'all');
+        if touches
+            tform0 = imregtform(maskSmooth, petMeanCrop, 'translation', optimizer, metric);
+            tform = imregtform(maskSmooth, petMeanCrop, 'rigid', optimizer, metric, 'InitialTransformation', tform0);
+            mask_reg = imwarp( ...
+            maskCrop, tform, ...
+            'OutputView', imref3d(size(petMeanCrop)), ...
+            'InterpolationMethod','nearest');   % keep binary
+        end
+    end
+
+    mask_reg = imdilate(mask_reg,physicalSphereSE(1*1.65, vx));
 
     % ---- Morphology: cortex shell based on physical thickness ----
     cortexThickness_mm = 10;                        % physical thickness
@@ -186,9 +226,17 @@ for ki = 1:numKidneys
     seCortex = strel('sphere', rVox);
 
     M = imfill(mask_reg, 'holes');
-    M = imclose(M, strel('sphere', 20));            % fill dents
-
-    innerKidney  = imerode(M, seCortex);
+    M = imclose(M, physicalSphereSE(20*1.65, vx));
+    M_=M;% fill dents
+    M=false(size(M_));
+    M(M_>0.5)=true;
+    innerKidney  = imerode(M_, seCortex);
+    innerKidney_=innerKidney;
+    innerKidney=false(size(innerKidney_));
+    innerKidney(innerKidney_>0.5)=true;
+    mask_reg_=mask_reg;
+    mask_reg=false(size(mask_reg));
+    mask_reg(mask_reg_>0.5)=true;
     cortexShell  = M & ~innerKidney & mask_reg;
 
     % ---- PET-based thresholding for cortex ----
@@ -196,12 +244,12 @@ for ki = 1:numKidneys
     threshold = prctile(petMeanCrop(:), 75);        % high-uptake shell
     thresMask = maskedPET > threshold;
 
-    finalMask = imerode(thresMask, strel('sphere', 1));
+    finalMask = imerode(thresMask, physicalSphereSE(1.65, vx));
 
     % Store 4D PET crop from ORIGINAL PET volume (not smoothed)
     kidneyPET{ki}   = petData(y1:y2, x1:x2, z1:z2, :);
     cortexMasks{ki} = finalMask;
-
+    petMeanCrop_{ki} = petMeanCrop;
     % Optional visualization per kidney
     if showDebug
         viewer2 = viewer3d;
@@ -212,12 +260,67 @@ for ki = 1:numKidneys
         title(viewer2, roiName);
     end
 
-    % You currently compute hilum stuff elsewhere; spacing is ready:
-    %   voxelSpacing, isRightKidney are available here if needed.
-    %#ok<NASGU> % isRightKidney not used yet
 
 end
 
+%%
+
+figure;
+tiledlayout(2,4,'TileSpacing','compact','Padding','tight')
+for ki = 1:numKidneys
+    vol=imgaussfilt3(petMeanCrop_{ki},1);
+    finalMask=cortexMasks{ki};
+    nexttile
+    m=rot90(squeeze(max(maskCrop_{ki},[],2)));
+    I=rot90(squeeze(max(vol,[],2)));
+    Ishow = mat2gray(I, [0 double(prctile(I,99.5,"all"))]); 
+    % Choose colors for labels 1 and 2
+    cmap = [1 0 0;   % label 1 = red
+            0 1 0];  % label 2 = green
+    J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
+    imshow(J);
+    title('MiP - TotalSeg')
+    nexttile
+    m=rot90(squeeze(max(finalMask,[],2)));
+    I=rot90(squeeze(max(vol,[],2)));
+    Ishow = mat2gray(I, [0 double(prctile(I,99.5,"all"))]); 
+    % Choose colors for labels 1 and 2
+    cmap = [1 0 0;   % label 1 = red
+            0 1 0];  % label 2 = green
+    J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
+    imshow(J);
+    title('MiP')
+    nexttile
+    [idxX, idxY, idxZ] = ind2sub(size(finalMask), find(finalMask));
+    com_voxel = [mean(idxX), mean(idxY), mean(idxZ)];
+    m=rot90(squeeze(finalMask(:,round(com_voxel(2)),:)));
+    I=rot90(squeeze(vol(:,round(com_voxel(2)),:)));
+    Ishow = mat2gray(I, [0 double(prctile(I,99.5,"all"))]); 
+    % Choose colors for labels 1 and 2
+    cmap = [1 0 0;   % label 1 = red
+            0 1 0];  % label 2 = green
+    J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
+    imshow(J);
+    title('Coronal')
+    nexttile
+    [idxX, idxY, idxZ] = ind2sub(size(finalMask), find(finalMask));
+    com_voxel = [mean(idxX), mean(idxY), mean(idxZ)];
+    m=rot90(squeeze(finalMask(:,:,round(com_voxel(3)))));
+    I=rot90(squeeze(vol(:,:,round(com_voxel(3)))));
+    Ishow = mat2gray(I, [0 double(prctile(I,99.5,"all"))]); 
+    % Choose colors for labels 1 and 2
+    cmap = [1 0 0;   % label 1 = red
+            0 1 0];  % label 2 = green
+    J = labeloverlay(Ishow, m, 'Colormap', cmap, 'Transparency', 0.45);
+    imshow(J);
+    title('Axial')
+
+end
+drawnow
+if ~isfolder(fullfile(baseNifti, 'qc'))
+    mkdir(fullfile(baseNifti, 'qc'))
+end
+saveas(gcf, fullfile(baseNifti, 'qc', [subject '_kidney_VOIs.png']));
 %% ==== Aorta mask generation (using physical dz) ====
 disp('Building aorta masks...');
 petSum = sum(petData, 4);     % 3D sum over time
@@ -299,8 +402,10 @@ disp('Performing ROI-level modeling...');
 idif = idif ./ 1000;
 tac  = tac  ./ 1000;
 
-figure;
+figure('units','normalized','outerposition',[0 0 0.95 0.95])
+
 tiledlayout(3,4);
+
 
 % IDIF overview
 ax1 = nexttile([1 2]);
@@ -381,6 +486,15 @@ saveas(gcf, fullfile(outdir, [subject '_kidney_ROIfit.png']));
 % You can rename columns later; for speed / robustness we keep generic names
 Th = array2table(resultsH);
 Tv = array2table(resultsV);
+Th.Properties.VariableNames={'K1 (turbo)', 'k2 (turbo)', 'Va (turbo)', 'R2 (turbo)', 'delay (turbo)',...
+    'K1 (idif1)', 'k2 (idif1)', 'Va (idif1)', 'R2 (idif1)', 'delay (idif1)',...
+    'K1 (idif2)', 'k2 (idif2)', 'Va (idif2)', 'R2 (idif2)', 'delay (idif2)',...
+    'K1 (idif3)', 'k2 (idif3)', 'Va (idif3)', 'R2 (idif3)', 'delay (idif3)'};
+Tv.Properties.VariableNames={'K1 (turbo)', 'k2 (turbo)', 'Va (turbo)', 'R2 (turbo)', 'delay (turbo)',...
+    'K1 (idif1)', 'k2 (idif1)', 'Va (idif1)', 'R2 (idif1)', 'delay (idif1)',...
+    'K1 (idif2)', 'k2 (idif2)', 'Va (idif2)', 'R2 (idif2)', 'delay (idif2)',...
+    'K1 (idif3)', 'k2 (idif3)', 'Va (idif3)', 'R2 (idif3)', 'delay (idif3)'};
+
 
 writetable(Tv, fullfile(outdir,[subject '_kidney_ROIfit.xlsx']), "Sheet","Left");
 writetable(Th, fullfile(outdir,[subject '_kidney_ROIfit.xlsx']), "Sheet","Right");
@@ -460,4 +574,17 @@ componentSizes = cellfun(@numel, cc.PixelIdxList);
 largestComponent = false(size(binaryVolume));
 largestComponent(cc.PixelIdxList{largestIdx}) = true;
 
+end
+
+function se = physicalSphereSE(radius_mm, voxelSize)
+    % radius_mm  scalar physical radius in mm
+    % voxelSize  [sx sy sz] in mm (can be scalar)
+    if isscalar(voxelSize), voxelSize = repmat(voxelSize,1,3); end
+    % number of voxels needed in each direction (half-size)
+    halfSize = ceil(radius_mm ./ voxelSize);
+    % grid in voxels -> convert to physical coords (mm)
+    [x,y,z] = ndgrid(-halfSize(1):halfSize(1), -halfSize(2):halfSize(2), -halfSize(3):halfSize(3));
+    physDist = sqrt((x.*voxelSize(1)).^2 + (y.*voxelSize(2)).^2 + (z.*voxelSize(3)).^2);
+    nhood = physDist <= radius_mm;
+    se = strel(nhood);
 end
